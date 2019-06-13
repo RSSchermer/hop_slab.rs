@@ -1,0 +1,16 @@
+[package]
+name = "hop-slab"
+version = "0.1.0"
+authors = ["RSSchermer <roland0507@gmail.com>"]
+edition = "2018"
+
+[dev-dependencies]
+criterion = "0.2"
+slab = "0.4.2"
+
+[lib]
+bench = false
+
+[[bench]]
+name = "bench"
+harness = false
