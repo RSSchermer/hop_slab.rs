@@ -163,6 +163,30 @@ fn drain() {
 }
 
 #[test]
+fn drain_rev() {
+    let mut slab = HopSlab::new();
+
+    let a = slab.insert("a");
+    let b = slab.insert("b");
+    let c = slab.insert("c");
+    let d = slab.insert("d");
+    let e = slab.insert("e");
+    let f = slab.insert("f");
+    let g = slab.insert("g");
+
+    slab.remove(b);
+    slab.remove(c);
+    slab.remove(f);
+
+    let prior_capacity = slab.capacity();
+    let drain = slab.drain();
+
+    assert_eq!(drain.rev().collect::<Vec<_>>(), vec!["g", "e", "d", "a"]);
+    assert!(slab.is_empty());
+    assert_eq!(slab.capacity(), prior_capacity);
+}
+
+#[test]
 fn into_iter() {
     let mut slab = HopSlab::new();
 
@@ -185,6 +209,57 @@ fn into_iter() {
     assert_eq!(iter.next(), Some((e, "e")));
     assert_eq!(iter.next(), Some((g, "g")));
     assert_eq!(iter.next(), None);
+}
+
+#[test]
+fn into_iter_rev() {
+    let mut slab = HopSlab::new();
+
+    let a = slab.insert("a");
+    let b = slab.insert("b");
+    let c = slab.insert("c");
+    let d = slab.insert("d");
+    let e = slab.insert("e");
+    let f = slab.insert("f");
+    let g = slab.insert("g");
+
+    slab.remove(b);
+    slab.remove(c);
+    slab.remove(f);
+
+    let mut iter = slab.into_iter().rev();
+
+    assert_eq!(iter.next(), Some((g, "g")));
+    assert_eq!(iter.next(), Some((e, "e")));
+    assert_eq!(iter.next(), Some((d, "d")));
+    assert_eq!(iter.next(), Some((a, "a")));
+    assert_eq!(iter.next(), None);
+}
+
+#[test]
+fn into_iter_alternate_front_back() {
+    let mut slab = HopSlab::new();
+
+    let a = slab.insert("a");
+    let b = slab.insert("b");
+    let c = slab.insert("c");
+    let d = slab.insert("d");
+    let e = slab.insert("e");
+    let f = slab.insert("f");
+    let g = slab.insert("g");
+
+    slab.remove(b);
+    slab.remove(c);
+    slab.remove(f);
+
+    let mut iter = slab.into_iter();
+
+    assert_eq!(iter.next(), Some((a, "a")));
+    assert_eq!(iter.next_back(), Some((g, "g")));
+    assert_eq!(iter.next(), Some((d, "d")));
+    assert_eq!(iter.next_back(), Some((e, "e")));
+    assert_eq!(iter.next(), None);
+    assert_eq!(iter.next_back(), None);
 }
 
 #[test]
@@ -213,6 +288,57 @@ fn iter() {
 }
 
 #[test]
+fn iter_rev() {
+    let mut slab = HopSlab::new();
+
+    let a = slab.insert("a");
+    let b = slab.insert("b");
+    let c = slab.insert("c");
+    let d = slab.insert("d");
+    let e = slab.insert("e");
+    let f = slab.insert("f");
+    let g = slab.insert("g");
+
+    slab.remove(b);
+    slab.remove(c);
+    slab.remove(f);
+
+    let mut iter = slab.iter().rev();
+
+    assert_eq!(iter.next(), Some((g, &"g")));
+    assert_eq!(iter.next(), Some((e, &"e")));
+    assert_eq!(iter.next(), Some((d, &"d")));
+    assert_eq!(iter.next(), Some((a, &"a")));
+    assert_eq!(iter.next(), None);
+}
+
+#[test]
+fn iter_alternate_front_back() {
+    let mut slab = HopSlab::new();
+
+    let a = slab.insert("a");
+    let b = slab.insert("b");
+    let c = slab.insert("c");
+    let d = slab.insert("d");
+    let e = slab.insert("e");
+    let f = slab.insert("f");
+    let g = slab.insert("g");
+
+    slab.remove(b);
+    slab.remove(c);
+    slab.remove(f);
+
+    let mut iter = slab.iter();
+
+    assert_eq!(iter.next(), Some((a, &"a")));
+    assert_eq!(iter.next_back(), Some((g, &"g")));
+    assert_eq!(iter.next(), Some((d, &"d")));
+    assert_eq!(iter.next_back(), Some((e, &"e")));
+    assert_eq!(iter.next(), None);
+    assert_eq!(iter.next_back(), None);
+}
+
+#[test]
 fn iter_mut() {
     let mut slab = HopSlab::new();
 
@@ -235,4 +361,55 @@ fn iter_mut() {
     assert_eq!(iter.next(), Some((e, &mut "e")));
     assert_eq!(iter.next(), Some((g, &mut "g")));
     assert_eq!(iter.next(), None);
+}
+
+#[test]
+fn iter_mut_rev() {
+    let mut slab = HopSlab::new();
+
+    let a = slab.insert("a");
+    let b = slab.insert("b");
+    let c = slab.insert("c");
+    let d = slab.insert("d");
+    let e = slab.insert("e");
+    let f = slab.insert("f");
+    let g = slab.insert("g");
+
+    slab.remove(b);
+    slab.remove(c);
+    slab.remove(f);
+
+    let mut iter = slab.iter_mut().rev();
+
+    assert_eq!(iter.next(), Some((g, &mut "g")));
+    assert_eq!(iter.next(), Some((e, &mut "e")));
+    assert_eq!(iter.next(), Some((d, &mut "d")));
+    assert_eq!(iter.next(), Some((a, &mut "a")));
+    assert_eq!(iter.next(), None);
+}
+
+#[test]
+fn iter_mut_alternate_front_back() {
+    let mut slab = HopSlab::new();
+
+    let a = slab.insert("a");
+    let b = slab.insert("b");
+    let c = slab.insert("c");
+    let d = slab.insert("d");
+    let e = slab.insert("e");
+    let f = slab.insert("f");
+    let g = slab.insert("g");
+
+    slab.remove(b);
+    slab.remove(c);
+    slab.remove(f);
+
+    let mut iter = slab.iter_mut();
+
+    assert_eq!(iter.next(), Some((a, &mut "a")));
+    assert_eq!(iter.next_back(), Some((g, &mut "g")));
+    assert_eq!(iter.next(), Some((d, &mut "d")));
+    assert_eq!(iter.next_back(), Some((e, &mut "e")));
+    assert_eq!(iter.next(), None);
+    assert_eq!(iter.next_back(), None);
 }

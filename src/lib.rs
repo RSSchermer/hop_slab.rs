@@ -1,6 +1,8 @@
-use std::mem;
+#![feature(ptr_offset_from)]
+
 use std::num::NonZeroUsize;
 use std::ops::{Index, IndexMut};
+use std::{marker, mem};
 
 #[derive(PartialEq, Debug)]
 enum Entry<T> {
@@ -287,9 +289,9 @@ impl<T> HopSlab<T> {
                 }
 
                 // Safe because there's always an unoccupied sentry entry at index 0
-                let previous = unsafe { self.entries.get_unchecked_mut(key - 1) };
+                let preceding_entry = unsafe { self.entries.get_unchecked_mut(key - 1) };
 
-                let (previous_block, previous_block_index) = match previous {
+                let (preceding_block, preceding_block_index) = match preceding_entry {
                     Entry::Occupied(_) => (None, 0),
                     Entry::FreeBlockHead(block) => (Some(block as *mut FreeBlockHead), key - 1),
                     Entry::FreeBlockTail(head_index) => {
@@ -310,9 +312,9 @@ impl<T> HopSlab<T> {
                 };
 
                 // Safe because we've already checked whether or not the key is the last index.
-                let mut next = unsafe { self.entries.get_unchecked_mut(key + 1) };
+                let mut succeeding_entry = unsafe { self.entries.get_unchecked_mut(key + 1) };
 
-                let entry = match (previous_block, &mut next) {
+                let entry = match (preceding_block, &mut succeeding_entry) {
                     (None, Entry::Occupied(_)) => {
                         // The entry that is being removed is not adjacent to any blocks of vacant
                         // entries. Replace it with a new free block and prepend the block to the
@@ -348,7 +350,7 @@ impl<T> HopSlab<T> {
                         unsafe {
                             (*block).end += 1;
 
-                            mem::replace(&mut *entry, Entry::FreeBlockTail(previous_block_index))
+                            mem::replace(&mut *entry, Entry::FreeBlockTail(preceding_block_index))
                         }
                     }
                     (None, Entry::FreeBlockHead(block)) => {
@@ -357,7 +359,7 @@ impl<T> HopSlab<T> {
                         // is being removed and fill the "hole" with a new tail entry.
 
                         let end = block.end;
-                        let block_head = mem::replace(next, Entry::FreeBlockTail(key));
+                        let block_head = mem::replace(succeeding_entry, Entry::FreeBlockTail(key));
 
                         // If the block has a tail entry, update it to point to the new head
                         // position.
@@ -369,38 +371,40 @@ impl<T> HopSlab<T> {
 
                         unsafe { mem::replace(&mut *entry, block_head) }
                     }
-                    (Some(previous_block), Entry::FreeBlockHead(next_block)) => {
+                    (Some(preceding_block), Entry::FreeBlockHead(succeeding_block)) => {
                         // The entry that is being removed is both preceded and succeeded by blocks
                         // of vacant entries. Merge the succeeding block into the preceding block
                         // and unlink the succeeding block from the free block chain.
 
-                        let next_block_previous = next_block.previous;
-                        let next_block_next = next_block.next;
-                        let next_block_end = next_block.end;
+                        let succeeding_block_previous = succeeding_block.previous;
+                        let succeeding_block_next = succeeding_block.next;
+                        let succeeding_block_end = succeeding_block.end;
 
-                        *next = Entry::FreeBlockTail(previous_block_index);
+                        *succeeding_entry = Entry::FreeBlockTail(preceding_block_index);
 
                         // Unlink the next block from the free block chain
-                        if let Some(next_block_previous) = next_block_previous {
+                        if let Some(succeeding_block_previous) = succeeding_block_previous {
                             let entry = unsafe {
-                                self.entries.get_unchecked_mut(next_block_previous.get())
+                                self.entries
+                                    .get_unchecked_mut(succeeding_block_previous.get())
                             };
 
                             if let Entry::FreeBlockHead(block) = entry {
-                                block.next = next_block_next;
+                                block.next = succeeding_block_next;
                             } else {
                                 unreachable!();
                             }
                         } else {
-                            self.first_free_block = next_block_next;
+                            self.first_free_block = succeeding_block_next;
                         }
 
-                        if let Some(next_block_next) = next_block_next {
-                            let entry =
-                                unsafe { self.entries.get_unchecked_mut(next_block_next.get()) };
+                        if let Some(succeeding_block_next) = succeeding_block_next {
+                            let entry = unsafe {
+                                self.entries.get_unchecked_mut(succeeding_block_next.get())
+                            };
 
                             if let Entry::FreeBlockHead(block) = entry {
-                                block.previous = next_block_previous;
+                                block.previous = succeeding_block_previous;
                             } else {
                                 unreachable!();
                             }
@@ -408,18 +412,18 @@ impl<T> HopSlab<T> {
 
                         // If the succeeding block has a tail entry, then update that tail entry to
                         // point to the head of the preceding block.
-                        if next_block_end > key + 2 {
+                        if succeeding_block_end > key + 2 {
                             let tail =
-                                unsafe { self.entries.get_unchecked_mut(next_block_end - 1) };
+                                unsafe { self.entries.get_unchecked_mut(succeeding_block_end - 1) };
 
-                            *tail = Entry::FreeBlockTail(previous_block_index);
+                            *tail = Entry::FreeBlockTail(preceding_block_index);
                         }
 
                         unsafe {
                             // Finally, update the size of the preceding block
-                            (*previous_block).end = next_block_end;
+                            (*preceding_block).end = succeeding_block_end;
 
-                            mem::replace(&mut *entry, Entry::FreeBlockTail(previous_block_index))
+                            mem::replace(&mut *entry, Entry::FreeBlockTail(preceding_block_index))
                         }
                     }
                     _ => unreachable!(),
@@ -472,10 +476,17 @@ impl<T> HopSlab<T> {
     }
 
     pub fn drain(&mut self) -> Drain<T> {
-        Drain {
-            remaining: self.len,
-            slab: self,
-            current: 1,
+        let origin = self.entries.as_mut_ptr();
+        let entry_count = self.entries.len();
+
+        unsafe {
+            Drain {
+                remaining: self.len,
+                slab: self,
+                current_front: origin.offset(1),
+                current_back: origin.offset(entry_count as isize - 1),
+                origin,
+            }
         }
     }
 
@@ -615,18 +626,32 @@ impl<T> HopSlab<T> {
     }
 
     pub fn iter(&self) -> Iter<T> {
-        Iter {
-            entries: &self.entries,
-            current: 1,
-            remaining: self.len,
+        let origin = self.entries.as_ptr();
+        let entry_count = self.entries.len();
+
+        unsafe {
+            Iter {
+                current_front: origin.offset(1),
+                current_back: origin.offset(entry_count as isize - 1),
+                origin,
+                remaining: self.len,
+                _marker: marker::PhantomData,
+            }
         }
     }
 
     pub fn iter_mut(&mut self) -> IterMut<T> {
-        IterMut {
-            entries: &mut self.entries,
-            current: 1,
-            remaining: self.len,
+        let origin = self.entries.as_mut_ptr();
+        let entry_count = self.entries.len();
+
+        unsafe {
+            IterMut {
+                current_front: origin.offset(1),
+                current_back: origin.offset(entry_count as isize - 1),
+                origin,
+                remaining: self.len,
+                _marker: marker::PhantomData,
+            }
         }
     }
 }
@@ -663,10 +688,17 @@ impl<T> IntoIterator for HopSlab<T> {
     type IntoIter = IntoIter<T>;
 
     fn into_iter(mut self) -> Self::IntoIter {
-        IntoIter {
-            remaining: self.len,
-            entries: self.entries,
-            current: 1,
+        let origin = self.entries.as_mut_ptr();
+        let entry_count = self.entries.len();
+
+        unsafe {
+            IntoIter {
+                current_front: origin.offset(1),
+                current_back: origin.offset(entry_count as isize - 1),
+                origin,
+                remaining: self.len,
+                slab: self,
+            }
         }
     }
 }
@@ -692,8 +724,10 @@ impl<'a, T> IntoIterator for &'a mut HopSlab<T> {
 }
 
 pub struct IntoIter<T> {
-    entries: Vec<Entry<T>>,
-    current: usize,
+    slab: HopSlab<T>,
+    origin: *mut Entry<T>,
+    current_front: *mut Entry<T>,
+    current_back: *mut Entry<T>,
     remaining: usize,
 }
 
@@ -704,32 +738,34 @@ impl<T> Iterator for IntoIter<T> {
         if self.remaining > 0 {
             self.remaining -= 1;
 
-            let key = self.current;
+            unsafe {
+                let entry = mem::replace(&mut *self.current_front, Entry::FreeBlockTail(0));
 
-            let entry = unsafe { self.entries.get_unchecked_mut(key) };
-            let entry = mem::replace(entry, Entry::FreeBlockTail(0));
+                match entry {
+                    Entry::Occupied(value) => {
+                        let key = self.current_front.offset_from(self.origin) as usize;
 
-            match entry {
-                Entry::Occupied(value) => {
-                    self.current += 1;
+                        self.current_front = self.current_front.offset(1);
 
-                    Some((key, value))
-                }
-                Entry::FreeBlockHead(block) => {
-                    let end = block.end;
-
-                    self.current = end + 1;
-
-                    let entry = unsafe { self.entries.get_unchecked_mut(end) };
-                    let entry = mem::replace(entry, Entry::FreeBlockTail(0));
-
-                    if let Entry::Occupied(value) = entry {
-                        Some((end, value))
-                    } else {
-                        unreachable!()
+                        Some((key, value))
                     }
+                    Entry::FreeBlockHead(block) => {
+                        let end = block.end;
+
+                        let entry = self.origin.offset(end as isize);
+
+                        self.current_front = entry.offset(1);
+
+                        let entry = mem::replace(&mut *entry, Entry::FreeBlockTail(0));
+
+                        if let Entry::Occupied(value) = entry {
+                            Some((end, value))
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                    _ => unreachable!(),
                 }
-                _ => unreachable!(),
             }
         } else {
             None
@@ -742,6 +778,58 @@ impl<T> Iterator for IntoIter<T> {
 
     fn count(self) -> usize {
         self.len()
+    }
+}
+
+impl<T> DoubleEndedIterator for IntoIter<T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.remaining > 0 {
+            self.remaining -= 1;
+
+            unsafe {
+                let entry = mem::replace(&mut *self.current_back, Entry::FreeBlockTail(0));
+
+                match entry {
+                    Entry::Occupied(value) => {
+                        let key = self.current_back.offset_from(self.origin) as usize;
+
+                        self.current_back = self.current_back.offset(-1);
+
+                        Some((key, value))
+                    }
+                    Entry::FreeBlockHead(_) => {
+                        let entry = self.current_back.offset(-1);
+                        let key = entry.offset_from(self.origin) as usize;
+
+                        self.current_back = entry.offset(-1);
+
+                        let entry = mem::replace(&mut *entry, Entry::FreeBlockTail(0));
+
+                        if let Entry::Occupied(value) = entry {
+                            Some((key, value))
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                    Entry::FreeBlockTail(head_index) => {
+                        let end = head_index - 1;
+                        let entry = self.origin.offset(end as isize);
+
+                        self.current_back = entry.offset(-1);
+
+                        let entry = mem::replace(&mut *entry, Entry::FreeBlockTail(0));
+
+                        if let Entry::Occupied(value) = entry {
+                            Some((end, value))
+                        } else {
+                            unreachable!()
+                        }
+                    },
+                }
+            }
+        } else {
+            None
+        }
     }
 }
 
@@ -752,9 +840,11 @@ impl<T> ExactSizeIterator for IntoIter<T> {
 }
 
 pub struct Iter<'a, T> {
-    entries: &'a Vec<Entry<T>>,
-    current: usize,
+    origin: *const Entry<T>,
+    current_front: *const Entry<T>,
+    current_back: *const Entry<T>,
     remaining: usize,
+    _marker: marker::PhantomData<&'a HopSlab<T>>,
 }
 
 impl<'a, T> Iterator for Iter<'a, T> {
@@ -764,26 +854,29 @@ impl<'a, T> Iterator for Iter<'a, T> {
         if self.remaining > 0 {
             self.remaining -= 1;
 
-            let key = self.current;
+            unsafe {
+                match &*self.current_front {
+                    Entry::Occupied(value) => {
+                        let key = self.current_front.offset_from(self.origin) as usize;
 
-            match unsafe { self.entries.get_unchecked(key) } {
-                Entry::Occupied(value) => {
-                    self.current += 1;
+                        self.current_front = self.current_front.offset(1);
 
-                    Some((key, value))
-                }
-                Entry::FreeBlockHead(block) => {
-                    let end = block.end;
-
-                    self.current = end + 1;
-
-                    if let Entry::Occupied(value) = unsafe { self.entries.get_unchecked(end) } {
-                        Some((end, value))
-                    } else {
-                        unreachable!()
+                        Some((key, value))
                     }
+                    Entry::FreeBlockHead(block) => {
+                        let end = block.end;
+                        let entry = self.origin.offset(end as isize);
+
+                        self.current_front = entry.offset(1);
+
+                        if let Entry::Occupied(value) = &*entry {
+                            Some((end, value))
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                    _ => unreachable!(),
                 }
-                _ => unreachable!(),
             }
         } else {
             None
@@ -796,6 +889,52 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
     fn count(self) -> usize {
         self.len()
+    }
+}
+
+impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.remaining > 0 {
+            self.remaining -= 1;
+
+            unsafe {
+                match &*self.current_back {
+                    Entry::Occupied(value) => {
+                        let key = self.current_back.offset_from(self.origin) as usize;
+
+                        self.current_back = self.current_back.offset(-1);
+
+                        Some((key, value))
+                    },
+                    Entry::FreeBlockHead(_) => {
+                        let entry = self.current_back.offset(-1);
+                        let key = entry.offset_from(self.origin) as usize;
+
+                        self.current_back = entry.offset(-1);
+
+                        if let Entry::Occupied(value) = &*entry {
+                            Some((key, value))
+                        } else {
+                            unreachable!()
+                        }
+                    },
+                    Entry::FreeBlockTail(head_index) => {
+                        let end = head_index - 1;
+                        let entry = self.origin.offset(end as isize);
+
+                        self.current_back = entry.offset(-1);
+
+                        if let Entry::Occupied(value) = &*entry {
+                            Some((end, value))
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                }
+            }
+        } else {
+            None
+        }
     }
 }
 
@@ -806,9 +945,11 @@ impl<'a, T> ExactSizeIterator for Iter<'a, T> {
 }
 
 pub struct IterMut<'a, T> {
-    entries: &'a mut Vec<Entry<T>>,
-    current: usize,
+    origin: *mut Entry<T>,
+    current_front: *mut Entry<T>,
+    current_back: *mut Entry<T>,
     remaining: usize,
+    _marker: marker::PhantomData<&'a HopSlab<T>>,
 }
 
 impl<'a, T> Iterator for IterMut<'a, T> {
@@ -818,34 +959,29 @@ impl<'a, T> Iterator for IterMut<'a, T> {
         if self.remaining > 0 {
             self.remaining -= 1;
 
-            let key = self.current;
+            unsafe {
+                match &mut *self.current_front {
+                    Entry::Occupied(value) => {
+                        let key = self.current_front.offset_from(self.origin) as usize;
 
-            match unsafe { self.entries.get_unchecked_mut(key) } {
-                Entry::Occupied(value) => {
-                    self.current += 1;
+                        self.current_front = self.current_front.offset(1);
 
-                    unsafe {
-                        // This is safe as the iterator won't return multiple references to the
-                        // same value.
-                        Some((key, &mut *(value as *mut _)))
+                        Some((key, value))
                     }
-                }
-                Entry::FreeBlockHead(block) => {
-                    let end = block.end;
+                    Entry::FreeBlockHead(block) => {
+                        let end = block.end;
+                        let entry = self.origin.offset(end as isize);
 
-                    self.current = end + 1;
+                        self.current_front = entry.offset(1);
 
-                    if let Entry::Occupied(value) = unsafe { self.entries.get_unchecked_mut(end) } {
-                        unsafe {
-                            // This is safe as the iterator won't return multiple references to
-                            // the same value.
-                            Some((end, &mut *(value as *mut _)))
+                        if let Entry::Occupied(value) = &mut *entry {
+                            Some((end, value))
+                        } else {
+                            unreachable!()
                         }
-                    } else {
-                        unreachable!()
                     }
+                    _ => unreachable!(),
                 }
-                _ => unreachable!(),
             }
         } else {
             None
@@ -858,6 +994,52 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 
     fn count(self) -> usize {
         self.len()
+    }
+}
+
+impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.remaining > 0 {
+            self.remaining -= 1;
+
+            unsafe {
+                match &mut *self.current_back {
+                    Entry::Occupied(value) => {
+                        let key = self.current_back.offset_from(self.origin) as usize;
+
+                        self.current_back = self.current_back.offset(-1);
+
+                        Some((key, value))
+                    },
+                    Entry::FreeBlockHead(_) => {
+                        let entry = self.current_back.offset(-1);
+                        let key = entry.offset_from(self.origin) as usize;
+
+                        self.current_back = entry.offset(-1);
+
+                        if let Entry::Occupied(value) = &mut *entry {
+                            Some((key, value))
+                        } else {
+                            unreachable!()
+                        }
+                    },
+                    Entry::FreeBlockTail(head_index) => {
+                        let end = *head_index - 1;
+                        let entry = self.origin.offset(end as isize);
+
+                        self.current_back = entry.offset(-1);
+
+                        if let Entry::Occupied(value) = &mut *entry {
+                            Some((end, value))
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                }
+            }
+        } else {
+            None
+        }
     }
 }
 
@@ -869,7 +1051,9 @@ impl<'a, T> ExactSizeIterator for IterMut<'a, T> {
 
 pub struct Drain<'a, T> {
     slab: &'a mut HopSlab<T>,
-    current: usize,
+    origin: *mut Entry<T>,
+    current_front: *mut Entry<T>,
+    current_back: *mut Entry<T>,
     remaining: usize,
 }
 
@@ -880,35 +1064,37 @@ impl<'a, T> Iterator for Drain<'a, T> {
         if self.remaining > 0 {
             self.remaining -= 1;
 
-            let entry = unsafe { self.slab.entries.get_unchecked_mut(self.current) };
+            unsafe {
+                let entry = &mut *self.current_front;
 
-            match entry {
-                Entry::Occupied(_) => {
-                    let entry = mem::replace(entry, Entry::FreeBlockTail(0));
+                match entry {
+                    Entry::Occupied(_) => {
+                        self.current_front = self.current_front.offset(1);
 
-                    self.current += 1;
+                        let entry = mem::replace(entry, Entry::FreeBlockTail(0));
 
-                    if let Entry::Occupied(value) = entry {
-                        Some(value)
-                    } else {
-                        unreachable!()
+                        if let Entry::Occupied(value) = entry {
+                            Some(value)
+                        } else {
+                            unreachable!()
+                        }
                     }
-                }
-                Entry::FreeBlockHead(block) => {
-                    let end = block.end;
+                    Entry::FreeBlockHead(block) => {
+                        let end = block.end;
+                        let entry = self.origin.offset(end as isize);
 
-                    self.current = end + 1;
+                        self.current_front = entry.offset(1);
 
-                    let entry = unsafe { self.slab.entries.get_unchecked_mut(end) };
-                    let entry = mem::replace(entry, Entry::FreeBlockTail(0));
+                        let entry = mem::replace(&mut *entry, Entry::FreeBlockTail(0));
 
-                    if let Entry::Occupied(value) = entry {
-                        Some(value)
-                    } else {
-                        unreachable!()
+                        if let Entry::Occupied(value) = entry {
+                            Some(value)
+                        } else {
+                            unreachable!()
+                        }
                     }
+                    _ => unreachable!(),
                 }
-                _ => unreachable!(),
             }
         } else {
             None
@@ -921,6 +1107,60 @@ impl<'a, T> Iterator for Drain<'a, T> {
 
     fn count(self) -> usize {
         self.len()
+    }
+}
+
+impl<'a, T> DoubleEndedIterator for Drain<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.remaining > 0 {
+            self.remaining -= 1;
+
+            unsafe {
+                let entry = &mut *self.current_back;
+
+                match entry {
+                    Entry::Occupied(_) => {
+                        self.current_back = self.current_back.offset(-1);
+
+                        let entry = mem::replace(entry, Entry::FreeBlockTail(0));
+
+                        if let Entry::Occupied(value) = entry {
+                            Some(value)
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                    Entry::FreeBlockHead(_) => {
+                        let entry = self.current_back.offset(-1);
+
+                        self.current_back = entry.offset(-1);
+
+                        let entry = mem::replace(&mut *entry, Entry::FreeBlockTail(0));
+
+                        if let Entry::Occupied(value) = entry {
+                            Some(value)
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                    Entry::FreeBlockTail(head_index) => {
+                        let entry = self.origin.offset(*head_index as isize - 1);
+
+                        self.current_back = entry.offset(-1);
+
+                        let entry = mem::replace(&mut *entry, Entry::FreeBlockTail(0));
+
+                        if let Entry::Occupied(value) = entry {
+                            Some(value)
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                }
+            }
+        } else {
+            None
+        }
     }
 }
 
