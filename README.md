@@ -19,8 +19,8 @@ of iterating over a `Slab`.
 
 However, this requires more complex book-keeping when inserting and removing entries and thus
 these operations become more expensive; as a rough guide, inserting is up to 1.5 times slower
-and removing is up to 2 times slower. There is some nuance to this, see [benches/bench.rs] for
-details. The cost of lookups is identical for both slab implementations.
+and removing is up to 2 times slower. There is some nuance to this, see [benches/bench.rs](benches/bench.rs) 
+for details. The cost of lookups is identical for both slab implementations.
 
 Additionally, a `HopSlab` may use more memory than a regular `Slab`. Both the `HopSlab` and the
 `Slab` use vacant slots themselves to track the location of the vacant slots. However, a `Slab`
