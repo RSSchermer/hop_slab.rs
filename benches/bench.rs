@@ -57,6 +57,7 @@ fn insert(criterion: &mut Criterion) {
 
                 let a = slab.insert("a");
                 slab.insert("b");
+                slab.insert("c");
                 slab.remove(a);
 
                 slab
