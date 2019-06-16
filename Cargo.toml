@@ -3,6 +3,9 @@ name = "hop-slab"
 version = "0.1.0"
 authors = ["RSSchermer <roland0507@gmail.com>"]
 edition = "2018"
+repository = "https://github.com/RSSchermer/hop_slab.rs"
+license = "MIT"
+readme = "README.md"
 
 [dev-dependencies]
 criterion = "0.2"
